@@ -2,11 +2,12 @@
 
 The five method notebooks score defects in archived code responses from
 MBPP, HumanEval, HumanEval-Java, and Defects4J. Each probe is trained and
-evaluated independently on each benchmark.
+evaluated independently on each benchmark. Notebook 6 evaluates the
+uncertainty-guided agent loop with SAPLMA and UQ Head.
 
 ## Setup
 
-From the repository root in PowerShell, use Python 3.12–3.14 and the
+From the repository root in PowerShell, use Python 3.12-3.14 and the
 project's `.venv`. The notebooks default to an NVIDIA GPU and 4-bit NF4
 weights.
 
@@ -37,11 +38,12 @@ Code. To use unquantized weights, change the notebook to
 | [HaloScope](05_haloscope.ipynb) | Weighted SVD and a binary classifier trained on pseudo-labels from block 16 |
 | [Agent review and candidate selection](06_agent_loop.ipynb) | Compare line-guided review and selection among up to three code variants with SAPLMA and UQ Head |
 
-The saved outputs use all 1,198 responses in the Llama 3 subset. Run all
-cells to reproduce the tables. Set `pilot = True` for a shorter run with up to
-48 training, 16 validation, and 24 test responses per benchmark. The
-archive and model traces are cached in `~/.cache/ugar` and reused by all
-five methods.
+The saved detector outputs use all 1,198 responses in the Llama 3 subset.
+Run all cells to reproduce the tables. Set `pilot = True` for a shorter run
+with up to 48 training, 16 validation, and 24 test responses per benchmark.
+The archive and model traces are cached in `~/.cache/ugar` and reused by all
+five detector methods. Notebook 6 uses four held-out tasks per benchmark and
+also runs candidate selection with up to three generated variants.
 
 ## Data and evaluation
 
@@ -102,11 +104,11 @@ print(reply, trace["saplma"].shape, hidden.shape)
 `llm-uncertainty-layer` repository at commit `811b48a`. The dataset
 archive and method papers are linked in the notebooks and this guide.
 
-## Experiment List (TODO)
+## Current scope
 
-* Token vs Line vs Block level ?
-* Rank lines
-* Candidate selection
-* Pass scores directly
-* Uncertainty based testing
-* Run review untill total score th/avg score th/max score th
+The completed notebooks cover token-, line-, and response-level metrics,
+line ranking, candidate selection, uncertainty-guided review, and estimator
+training histories. The agent loop exposes `create_agent` for iterative
+line-guided review and `create_agent_candidates` for selecting among up to
+three generated code variants. See [RESULTS.md](../RESULTS.md) for the latest
+executed pilot results.

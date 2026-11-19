@@ -8,9 +8,12 @@ agents.
 - [Results and interpretation](RESULTS.md)
 - [Setup and notebook index](experiments/README)
 
-Use Python 3.12–3.14 in the project's `.venv` and select the
+Use Python 3.12-3.14 in the project's `.venv` and select the
 **Python (UGAR)** kernel. The default configuration uses an NVIDIA GPU
 and 4-bit Llama 3.1 8B Instruct through Hugging Face Transformers.
+The estimator notebooks evaluate all five uncertainty methods. The agent
+notebook uses SAPLMA and UQ Head, because both expose token-level scores
+needed for line ranking and candidate selection.
 
 ## Line-level uncertainty in the agent loop
 
