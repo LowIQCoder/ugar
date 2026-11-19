@@ -1,0 +1,95 @@
+# UGAR uncertainty experiments
+
+The five method notebooks score defects in archived code responses from
+MBPP, HumanEval, HumanEval-Java, and Defects4J. Each probe is trained and
+evaluated independently on each benchmark.
+
+## Setup
+
+From the repository root in PowerShell, use Python 3.12–3.14 and the
+project's `.venv`. The notebooks default to an NVIDIA GPU and 4-bit NF4
+weights.
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -m pip install --no-compile -r experiments/requirements_ugar.txt
+.\.venv\Scripts\hf.exe auth login
+.\.venv\Scripts\python.exe -m ipykernel install --sys-prefix --name ugar --display-name "Python (UGAR)"
+```
+
+Accept the checkpoint's license on Hugging Face before authenticating.
+The first run downloads about 16 GB of checkpoint files. Select the
+**Python (UGAR)** kernel in Jupyter or select the project's `.venv` in VS
+Code. To use unquantized weights, change the notebook to
+`TraceStore(quantize=False)` and allow memory for the full model.
+[Llama 3.1 8B Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct)
+
+## Run the notebooks
+
+| Notebook | Contents |
+| --- | --- |
+| [MBPP](data_mbpp.ipynb), [HumanEval](data_humaneval.ipynb), [HumanEval-Java](data_humaneval_java.ipynb), [Defects4J](data_defects4j.ipynb) | Dataset examples and split counts |
+| [Lookback Lens](01_lookback_lens.ipynb) | Logistic regression on prompt lookback ratios |
+| [Uncertainty Quantification Head](02_uq_head.ipynb) | Two-layer Transformer on lookback and recent attention |
+| [ICR Probe](03_icr_probe.ipynb) | MLP on layerwise divergence between attention and residual updates |
+| [SAPLMA](04_saplma.ipynb) | MLP on activations from decoder block 28 |
+| [HaloScope](05_haloscope.ipynb) | Weighted SVD and a binary classifier trained on pseudo-labels from block 16 |
+
+The saved outputs use all 1,198 responses in the Llama 3 subset. Run all
+cells to reproduce the tables. Set `pilot = True` for a shorter run with up to
+48 training, 16 validation, and 24 test responses per benchmark. The
+archive and model traces are cached in `~/.cache/ugar` and reused by all
+five methods.
+
+## Data and evaluation
+
+The pinned companion archive pairs Llama 3 8B Instruct generations with
+canonical solutions and supplies binary token annotations derived from
+diffs. The experiments replay both variants through Llama **3.1** 8B
+Instruct. The extractor checks that the tokenizer reproduces the archived
+IDs before running the model. Some archived failing generations have zero
+positive diff labels and count as clean under the token-level definition.
+The results measure defect detection on replayed text.
+[Code Hallucination Detection dataset](https://github.com/datapaf/CodeHallucinationDetection/tree/4681508aeec9c7aa491f42308f6090417118a818)
+
+Each benchmark uses a seeded split by task with roughly 60/20/20
+proportions. All five methods
+use the same examples. A line or sample is defective if it contains any
+positive token annotation. Its score is the maximum annotated token
+score. The notebooks report trapezoidal PR-AUC, average precision,
+ROC-AUC, precision, recall, and F1. The F1 threshold for each level is
+selected on validation and applied to the held-out test split.
+
+All methods use the same interface, `fit(traces, labels)` and
+`predict_uncertainty(traces)`. HaloScope fits without annotation labels.
+The validation thresholds use annotations for every method. The methods
+are adapted to token-level defect detection and use one fixed seed.
+
+## Transformers interface
+
+An extractor instance is callable with a prompt and reply and returns
+one row per reply token in each feature tensor. Lookback
+and recent-attention features come from the token's prediction position.
+ICR and the hidden-state probes use activations after the token is read.
+`hidden_states` concatenates selected decoder layers at the prediction
+positions. The extractor uses the Transformers checkpoint from the
+requested example.
+
+```python
+from experiments.traces import TransformersExtractor
+
+extractor = TransformersExtractor.from_pretrained()
+reply = extractor.generate("Who are you?", max_new_tokens=256)
+trace = extractor("Who are you?", reply)
+hidden = extractor.hidden_states("Who are you?", reply, layers=(-2, -1))
+print(reply, trace["saplma"].shape, hidden.shape)
+```
+
+`traces.py`, `methods.py`, and `evaluation.py` adapt the neighboring
+`llm-uncertainty-layer` repository at commit `811b48a`. The dataset
+archive and method papers are linked in the notebooks and this guide.
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s experiments -p "test_*.py" -v
+```
