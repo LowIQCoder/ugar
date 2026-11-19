@@ -8,7 +8,7 @@ HumanEval-Java, and Defects4J.
 ## Experiments
 
 - [Results and interpretation](RESULTS.md)
-- [Setup, notebook index, and smoke tests](experiments/README)
+- [Setup and notebook index](experiments/README)
 
 Use Python 3.12–3.14 in the project's `.venv` and select the
 **Python (UGAR)** kernel. The default configuration uses an NVIDIA GPU
@@ -23,19 +23,22 @@ held-out metrics at token, line, and response level.
 
 ## Project structure
 
-`experiments/` contains the independent notebooks, their shared experiment
-code, and the tests.
-
 ```text
+datasets/
+├── benchmarks.py       Dataset loading and task splits
+└── repair.py           Repair cases and archived assertions
 experiments/
-├── data_*.ipynb          Dataset examples and split counts
-├── 01–05 notebooks       One executed notebook per estimator
-├── data.py               Dataset loading and task splits
-├── traces.py             Transformers feature extraction
-├── methods.py            Five estimators with a shared interface
-├── evaluation.py         Trace caching, aggregation, and metrics
-├── requirements_ugar.txt Python dependencies
-└── README                Setup and experiment settings
+├── data_*.ipynb        Dataset examples and split counts
+├── 01–05 notebooks     One executed notebook per estimator
+├── 06_agent_loop.ipynb  Uncertainty-guided agent review
+├── test.ipynb          Original model-loading notebook
+└── README              Setup and experiment settings
+src/
+├── traces.py           Transformers feature extraction
+├── methods.py          Five estimators with a shared interface
+├── evaluation.py       Trace caching, benchmark execution, and grading
+└── agent_loop.py       LangGraph review and revision
+requirements.txt        Python dependencies
 ```
 
 ## Authors

@@ -52,24 +52,63 @@ and levels, and the single run leaves small gaps uncertain.
 
 The LangGraph pilot used four held-out tasks per benchmark. Each condition
 started from the same archived draft and had one review and revision round.
-The guided conditions put up to two lines ranked by token uncertainty into
-the review prompt. The plain-review control used the same generation budget.
+SAPLMA and UQ Head each put up to two lines ranked by token uncertainty
+into the review prompt. The plain-review control used the same generation
+budget.
 [Executed agent notebook](experiments/06_agent_loop.ipynb)
 
 | Review condition | MBPP passed | HumanEval passed | HumanEval-Java similarity | Defects4J similarity |
 | --- | ---: | ---: | ---: | ---: |
 | Archived draft | 0/4 | 0/4 | 0.5843 | 0.2808 |
 | Plain review | 1/4 | 0/4 | 0.5318 | 0.2453 |
-| Lookback Lens | 2/4 | 1/4 | 0.6399 | 0.3056 |
 | UQ Head | 2/4 | 1/4 | 0.6399 | 0.3129 |
-| ICR Probe | 2/4 | 1/4 | 0.6399 | 0.4153 |
 | SAPLMA | 2/4 | 0/4 | 0.5831 | 0.3107 |
-| HaloScope | 2/4 | 0/4 | 0.6399 | 0.3045 |
 
-Lookback Lens, UQ Head, and ICR Probe each passed 3 of 8 Python tasks,
-compared with 1 of 8 for plain review. Python pass counts use archived
-assertions checked in Docker. All five guided conditions had higher mean
-Java code-token similarity than plain review. ICR Probe had the largest
-Defects4J gain (0.1700). Java scores measure similarity to the reference
-patch, so functional correctness on those tasks remains unverified.
+UQ Head passed 3 of 8 Python tasks, SAPLMA passed 2 of 8, and plain
+review passed 1 of 8. The Python pass counts use archived assertions
+checked in Docker. Both guided conditions improved mean Java code-token
+similarity over plain review. Java scores measure similarity to the
+reference patch, so functional correctness on those tasks remains unverified.
 The four-task samples make these pilot results sensitive to individual tasks.
+
+### Agent pipeline
+
+```mermaid
+flowchart TD
+    input["Task and archived draft"] --> inspect["Inspect current draft"]
+    inspect --> mode{"Uncertainty estimator enabled?"}
+    mode -->|Yes| rank["Rank lines with SAPLMA or UQ Head"]
+    mode -->|No| review["Review and propose a revision"]
+    rank -->|Top two lines| review
+    review --> valid{"Complete, nonempty code block?"}
+    valid -->|No| keep["Keep current draft"]
+    valid -->|Yes| stop{"Draft unchanged or round limit reached?"}
+    stop -->|No| inspect
+    stop -->|Yes| picked["Return revised draft"]
+    keep --> grade["Benchmark evaluation"]
+    picked --> grade
+    reference["Canonical code and available Python assertions"] --> grade
+```
+
+The benchmark runs one review round per condition. The graph can repeat
+inspection when given a larger round budget. Evaluation uses the returned
+draft for code-token comparison and checks the archived Python assertions
+where available.
+
+### Candidate selection
+
+On the same 16 held-out tasks, the new agent proposed up to three distinct
+code variants in one call. SAPLMA and UQ Head scored the same pool
+independently and each selected the variant with the lowest maximum
+token defect score. Candidate selection had a 768-token generation cap.
+Line-guided review had a 256-token cap. [Notebook comparison](experiments/06_agent_loop.ipynb)
+
+| Estimator | Python passes, review | Python passes, selection | HumanEval-Java similarity, review → selection | Defects4J similarity, review → selection |
+| --- | ---: | ---: | ---: | ---: |
+| UQ Head | 3/8 | 0/8 | 0.6399 → 0.4923 | 0.3129 → 0.1538 |
+| SAPLMA | 2/8 | 1/8 | 0.5831 → 0.4923 | 0.3107 → 0.1538 |
+
+Line-guided review passed more Python tasks and produced higher mean
+reference similarity on both Java benchmarks in this pilot. Candidate
+pools averaged three distinct variants on MBPP and 1.5 on Defects4J.
+Java functional correctness was unverified in both approaches.

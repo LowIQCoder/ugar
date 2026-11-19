@@ -12,7 +12,26 @@ Evaluated methods are the following:
 * SAPLMA - https://arxiv.org/pdf/2304.13734
 * HaloScope - https://arxiv.org/pdf/2409.17504
 
-As reference use code provided in ../llm-uncertainty-layer. Before solving task review this repo.
+Agent loop implemented in src/agent_loop.py. General pipeline is the following:
+1. Train estimator
+2. Use estimator in agent loop
+
+    ```mermaid
+    flowchart TD
+        input["Task and archived draft"] --> inspect["Inspect current draft"]
+        inspect --> mode{"Uncertainty estimator enabled?"}
+        mode -->|Yes| rank["Rank lines with SAPLMA or UQ Head"]
+        mode -->|No| review["Review and propose a revision"]
+        rank -->|Top two lines| review
+        review --> valid{"Complete, nonempty code block?"}
+        valid -->|No| keep["Keep current draft"]
+        valid -->|Yes| stop{"Draft unchanged or round limit reached?"}
+        stop -->|No| inspect
+        stop -->|Yes| picked["Return revised draft"]
+        keep --> grade["Benchmark evaluation"]
+        picked --> grade
+        reference["Canonical code and available Python assertions"] --> grade
+    ```
 
 ## Code style
 
