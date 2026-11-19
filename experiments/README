@@ -36,14 +36,30 @@ Code. To use unquantized weights, change the notebook to
 | [ICR Probe](03_icr_probe.ipynb) | MLP on layerwise divergence between attention and residual updates |
 | [SAPLMA](04_saplma.ipynb) | MLP on activations from decoder block 28 |
 | [HaloScope](05_haloscope.ipynb) | Weighted SVD and a binary classifier trained on pseudo-labels from block 16 |
-| [Agent review and candidate selection](06_agent_loop.ipynb) | Compare line-guided review and selection among up to three code variants with SAPLMA and UQ Head |
+| [Agent review and candidate selection](06_agent_loop.ipynb) | Compare SAPLMA and UQ Head guidance against direct Llama generation |
 
 The saved detector outputs use all 1,198 responses in the Llama 3 subset.
 Run all cells to reproduce the tables. Set `pilot = True` for a shorter run
 with up to 48 training, 16 validation, and 24 test responses per benchmark.
 The archive and model traces are cached in `~/.cache/ugar` and reused by all
-five detector methods. Notebook 6 uses four held-out tasks per benchmark and
-also runs candidate selection with up to three generated variants.
+five detector methods.
+
+## Agent evaluation
+
+Notebook 6 uses four held-out repair tasks per benchmark. The direct
+baseline sends the original task to Llama. Plain review and line-guided
+review both get the archived draft and one revision round. Candidate
+selection gets the same draft and generates up to three variants in one
+call. The direct and review calls allow 256 new tokens. The candidate
+generation call allows 768.
+
+The evaluator applies the same fitted probe to the direct and guided
+outputs. Line-level PR-AUC and F1 use a diff against the canonical
+solution to label unmatched output lines. The F1 threshold comes from the
+archived validation split. The uncertainty score delta averages the
+per-task maximum code-token score of the guided output minus that of the
+direct output. A negative delta means lower estimated uncertainty.
+Python pass counts use archived assertions when Docker checks are enabled.
 
 ## Data and evaluation
 

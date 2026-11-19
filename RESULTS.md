@@ -84,8 +84,9 @@ increased from 0.5976 to 0.6990.
 
 ## Uncertainty-guided agent review
 
-The LangGraph pilot used four held-out tasks per benchmark. Each condition
-started from the same archived draft and had one review and revision round.
+The LangGraph pilot used four held-out tasks per benchmark. Each review
+condition started from the same archived draft and had one revision round.
+The direct model received the original task and generated one answer.
 SAPLMA trained for 3 epochs and UQ Head for 10. Each estimator put up to
 two lines ranked by token uncertainty into the review prompt. The
 plain-review control used the same generation budget.
@@ -93,13 +94,15 @@ plain-review control used the same generation budget.
 
 | Review condition | MBPP passed | HumanEval passed | HumanEval-Java similarity | Defects4J similarity |
 | --- | ---: | ---: | ---: | ---: |
+| Direct model | 2/4 | 1/4 | 0.3738 | 0.1560 |
 | Archived draft | 0/4 | 0/4 | 0.5843 | 0.2808 |
 | Plain review | 1/4 | 0/4 | 0.5318 | 0.2453 |
 | UQ Head | 2/4 | 0/4 | 0.6399 | 0.3148 |
 | SAPLMA | 2/4 | 0/4 | 0.6399 | 0.3076 |
 
-UQ Head and SAPLMA each passed 2 of 8 Python tasks. Plain review passed
-1 of 8. The Python pass counts use archived assertions
+Direct generation passed 3 of 8 Python tasks. UQ Head and SAPLMA each
+passed 2 of 8 with line-guided review. Plain review passed 1 of 8.
+The Python pass counts use archived assertions
 checked in Docker. Both guided conditions improved mean Java code-token
 similarity over plain review. Java scores measure similarity to the
 reference patch, so functional correctness on those tasks remains unverified.
@@ -148,3 +151,29 @@ SAPLMA, both approaches passed two. Line-guided review produced higher
 mean reference similarity on both Java benchmarks with either estimator.
 Candidate pools averaged three distinct variants on MBPP and 1.5 on
 Defects4J. Java functional correctness was unverified in both approaches.
+
+### Uncertainty metrics against the direct model
+
+The same fitted estimator scores both replies after generation. PR-AUC
+and F1 use nonblank output lines, with unmatched lines labeled positive
+by a diff against the reference. The F1 threshold is selected on the
+archived validation split. Each delta averages four paired differences
+in maximum code-token score, guided minus direct. Negative values
+indicate lower estimated uncertainty. [Agent evaluation protocol](experiments/README#agent-evaluation)
+
+| Benchmark | Estimator | Direct PR-AUC / F1 | Review PR-AUC / F1 | Selection PR-AUC / F1 | Review delta | Selection delta |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| MBPP | UQ Head | 0.9953 / 0.0377 | 1.0000 / 0.1333 | 1.0000 / 0.8571 | +0.0389 | +0.0744 |
+| MBPP | SAPLMA | 0.9805 / 0.0377 | 1.0000 / 0.3529 | 1.0000 / 0.0000 | +0.0916 | -0.1339 |
+| HumanEval | UQ Head | 0.9217 / 0.8571 | 0.7612 / 0.7308 | 0.8948 / 0.8395 | +0.0003 | ≈0 |
+| HumanEval | SAPLMA | 0.9459 / 0.8542 | 0.7062 / 0.7059 | 0.9479 / 0.8533 | -0.0137 | -0.0922 |
+| HumanEval-Java | UQ Head | 0.9168 / 0.0000 | 0.8166 / 0.0000 | 0.8422 / 0.0000 | +0.0004 | +0.0002 |
+| HumanEval-Java | SAPLMA | 0.9549 / 0.5797 | 0.9856 / 0.8000 | 0.9349 / 0.4390 | -0.1311 | -0.1191 |
+| Defects4J | UQ Head | 0.9558 / 0.9861 | 0.9563 / 0.9756 | 0.9996 / 0.9520 | +0.0572 | -0.1471 |
+| Defects4J | SAPLMA | 0.9904 / 0.9185 | 0.9915 / 0.9457 | 0.9967 / 0.8784 | -0.0313 | -0.0034 |
+
+Unmatched lines are common, especially on Defects4J where 71 of 73
+direct-model lines were positive. Interpret PR-AUC with these class
+counts and F1 with the fixed validation threshold. On MBPP, SAPLMA
+candidate selection reduced uncertainty by 0.1339 and passed 2 of 4
+tasks, the same count as direct generation.

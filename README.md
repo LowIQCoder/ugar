@@ -15,6 +15,11 @@ The estimator notebooks evaluate all five uncertainty methods. The agent
 notebook uses SAPLMA and UQ Head, because both expose token-level scores
 needed for line ranking and candidate selection.
 
+The agent experiment compares both workflows with direct Llama generation
+on the same held-out tasks. It reports line-level PR-AUC, F1, and the
+paired uncertainty score delta between each guided output and the direct
+output. [Agent evaluation protocol](experiments/README#agent-evaluation)
+
 ## Line-level uncertainty in the agent loop
 
 Line-guided review takes the maximum token score on each

@@ -1,4 +1,5 @@
-from collections.abc import Mapping, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
 from difflib import SequenceMatcher
 from functools import lru_cache, partial
 from io import StringIO
@@ -62,6 +63,7 @@ AGENT_METHODS = {
     "UQ Head": UncertaintyQuantificationHead,
     "SAPLMA": SAPLMA,
 }
+DIRECT_MODEL = "Direct model"
 LEXEME = re.compile(
     r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|'
     r"'(?:\\.|[^'\\])*'|[\w$]+|[^\w\s]", re.DOTALL,
@@ -291,6 +293,7 @@ def run_benchmark(
     *,
     epochs: int | None = None,
     training_history: list[dict] | None = None,
+    uncertainty_results: list[dict] | None = None,
 ) -> list[dict]:
     if max_candidates is not None and not 1 <= max_candidates <= 3:
         raise ValueError("Use between one and three candidates.")
@@ -314,8 +317,16 @@ def run_benchmark(
     estimators = {
         name: factory(epochs=epochs) for name, factory in AGENT_METHODS.items()
     }
+    thresholds = {}
     for name, estimator in estimators.items():
         _fit_estimator(estimator, train, validation)
+        if uncertainty_results is not None:
+            scores = estimator.predict_uncertainty(
+                [row["trace"] for row in validation]
+            )
+            thresholds[name] = best_f1_threshold(
+                *aggregate_by_level(validation, scores)["line"]
+            )
         if training_history is not None:
             training_history.extend(
                 {"benchmark": benchmark, "method": name, **row}
@@ -332,6 +343,7 @@ def run_benchmark(
     results = []
     for case in tqdm(cases, desc=benchmark, leave=False):
         example = case.draft
+        outputs: dict[str, str] = {}
         reference = code_tokens(extract_code(case.reference), benchmark)
         checks = tests.get(example.idx)
         if not reference:
@@ -343,6 +355,7 @@ def run_benchmark(
             revision: Revision | None = None,
             selection: CandidateState | None = None,
         ) -> None:
+            outputs[method] = output
             code = extract_code(output)
             candidate = code_tokens(code, benchmark)
             row = {
@@ -368,7 +381,15 @@ def run_benchmark(
             results.append(row)
 
         initial: AgentState = {"task": example.question, "draft": example.reply}
+        predict = lru_cache(maxsize=8)(
+            partial(_reply_trace, store.extractor, example.context)
+        )
         with tracing_context(enabled=False):
+            if uncertainty_results is not None:
+                direct = store.extractor.generate(
+                    example.question, max_new_tokens=max_new_tokens
+                )
+                measure(DIRECT_MODEL, direct)
             if max_candidates is None:
                 measure("Archived draft", example.reply)
                 plain = plain_agent.invoke(initial)
@@ -380,40 +401,138 @@ def run_benchmark(
                     score = partial(rank_lines, scores=scores, line_ids=line_ids)
                     revised = create_agent(generate, score).invoke(initial)
                     measure(name, revised["draft"], revised["history"][0])
-                continue
+            else:
+                for name, estimator in estimators.items():
+                    def candidate_score(reply: str) -> float:
+                        trace, lines = predict(reply)
+                        scores, = estimator.predict_uncertainty([trace])
+                        code_scores = scores[lines >= 0]
+                        if not code_scores.numel():
+                            return float("nan")
+                        return float(code_scores.max())
 
-            predict = lru_cache(maxsize=max_candidates)(
-                partial(_candidate_trace, store.extractor, example.context)
-            )
+                    graph = create_agent_candidates(
+                        generate, candidate_score, max_candidates
+                    )
+                    selected = graph.invoke(initial)
+                    measure(name, selected["draft"], selection=selected)
+
+        if uncertainty_results is not None:
             for name, estimator in estimators.items():
-                def candidate_score(reply: str) -> float:
-                    trace, code_mask = predict(reply)
-                    scores, = estimator.predict_uncertainty([trace])
-                    return float(scores[code_mask].max())
-
-                graph = create_agent_candidates(
-                    generate, candidate_score, max_candidates
+                baseline = _score_agent_reply(
+                    outputs[DIRECT_MODEL], case.reference, predict, estimator
                 )
-                selected = graph.invoke(initial)
-                measure(name, selected["draft"], selection=selected)
+                guided = _score_agent_reply(
+                    outputs[name], case.reference, predict, estimator
+                )
+                paired = len(guided[1]) > 0 and len(baseline[1]) > 0
+                for condition, (labels, scores) in (
+                    (DIRECT_MODEL, baseline), ("Guided", guided)
+                ):
+                    delta = None
+                    if paired:
+                        delta = float(scores.max() - baseline[1].max())
+                    uncertainty_results.append({
+                        "benchmark": benchmark,
+                        "task": example.task_id,
+                        "estimator": name,
+                        "condition": condition,
+                        "threshold": thresholds[name],
+                        "labels": labels,
+                        "scores": scores,
+                        "uncertainty_delta": delta,
+                    })
     return results
 
 
-def _candidate_trace(
+def _reply_trace(
     extractor: TransformersExtractor, context: str, reply: str
 ) -> tuple[Trace, Tensor]:
     block = code_block(reply)
-    if block is None:
-        raise ValueError("The candidate must contain a complete code block.")
-    start, stop = block.span("code")
+    start, stop = block.span("code") if block else (0, len(reply))
     tokenizer = extractor.tokenizer
     prefix = tokenizer.encode(context, add_special_tokens=False)
     suffix = tokenizer(
         reply, add_special_tokens=False, return_offsets_mapping=True
     )
-    mask = torch.tensor([
-        bool(reply[max(start, left):min(stop, right)].strip())
-        for left, right in suffix["offset_mapping"]
-    ], dtype=torch.bool)
+    lines = []
+    for left, right in suffix["offset_mapping"]:
+        left, right = max(start, left), min(stop, right)
+        text = reply[left:right].lstrip()
+        anchor = right - len(text)
+        lines.append(reply.count("\n", start, anchor) if text else -1)
     trace = extractor.extract_ids(prefix + suffix["input_ids"], len(prefix))
-    return trace, mask
+    return trace, torch.tensor(lines, dtype=torch.long)
+
+
+def _score_agent_reply(
+    reply: str,
+    reference: str,
+    predict: Callable[[str], tuple[Trace, Tensor]],
+    estimator: UncertaintyEstimator,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not extract_code(reply).strip():
+        return np.array([], dtype=int), np.array([], dtype=float)
+
+    trace, line_ids = predict(reply)
+    scores, = estimator.predict_uncertainty([trace])
+    code = [
+        (index, line.strip())
+        for index, line in enumerate(extract_code(reply).split("\n"))
+        if line.strip()
+    ]
+    expected = [
+        line.strip() for line in extract_code(reference).split("\n")
+        if line.strip()
+    ]
+    labels = np.ones(len(code), dtype=int)
+    matcher = SequenceMatcher(
+        None, expected, [line for _, line in code], autojunk=False
+    )
+    for _, start, length in matcher.get_matching_blocks():
+        labels[start:start + length] = 0
+
+    maxima = scores.new_full((code[-1][0] + 1,), -torch.inf)
+    in_code = line_ids >= 0
+    maxima.scatter_reduce_(
+        0, line_ids[in_code], scores[in_code], reduce="amax"
+    )
+    line_scores = maxima[[index for index, _ in code]].numpy()
+    valid = np.isfinite(line_scores)
+    return labels[valid], line_scores[valid]
+
+
+def summarize_agent_uncertainty(rows: Sequence[dict]) -> list[dict]:
+    groups = defaultdict(list)
+    for row in rows:
+        key = row["benchmark"], row["estimator"], row["condition"]
+        groups[key].append(row)
+
+    summary = []
+    for (benchmark, estimator, condition), group in groups.items():
+        labels = np.concatenate([row["labels"] for row in group])
+        scores = np.concatenate([row["scores"] for row in group])
+        threshold = group[0]["threshold"]
+        pr_auc = f1 = None
+        if len(labels):
+            f1 = float(f1_score(labels, scores >= threshold, zero_division=0))
+        if len(np.unique(labels)) == 2:
+            precision, recall, _ = precision_recall_curve(labels, scores)
+            pr_auc = float(auc(recall, precision))
+        paired = [
+            row["uncertainty_delta"] for row in group
+            if row["uncertainty_delta"] is not None
+        ]
+        summary.append({
+            "benchmark": benchmark,
+            "estimator": estimator,
+            "condition": condition,
+            "lines": len(labels),
+            "positive_lines": int(labels.sum()),
+            "pr_auc": pr_auc,
+            "f1": f1,
+            "f1_threshold": threshold,
+            "uncertainty_delta": float(np.mean(paired)) if paired else None,
+            "paired_tasks": len(paired),
+        })
+    return summary
