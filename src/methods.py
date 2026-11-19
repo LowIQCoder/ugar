@@ -1,13 +1,29 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+import logging
+from typing import TypedDict
 
 import torch
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import auc, precision_recall_curve, roc_auc_score
 from torch import Tensor, nn
+from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 from .traces import Trace
+
+DEFAULT_EPOCHS = 15
+logger = logging.getLogger(__name__)
+type ValidationData = tuple[Sequence[Trace], Sequence[Tensor]]
+
+
+class EpochMetrics(TypedDict):
+    epoch: int
+    train_loss: float
+    validation_loss: float | None
+    validation_token_pr_auc: float | None
+    validation_token_roc_auc: float | None
 
 
 class UncertaintyEstimator(ABC):
@@ -59,21 +75,97 @@ class LookbackLens(UncertaintyEstimator):
         ]
 
 
-class _MLPProbe(UncertaintyEstimator):
+class EpochEstimator(UncertaintyEstimator):
+    default_epochs = DEFAULT_EPOCHS
+
+    def __init__(self, epochs: int | None = None, seed: int = 42) -> None:
+        self.epochs = self.default_epochs if epochs is None else epochs
+        if self.epochs < 1:
+            raise ValueError("Training requires at least one epoch.")
+        self.seed = seed
+        self.model: nn.Module
+        self.training_history: list[EpochMetrics] = []
+
+    @abstractmethod
+    def fit(
+        self,
+        traces: Sequence[Trace],
+        labels: Sequence[Tensor] | None = None,
+        *,
+        validation: ValidationData | None = None,
+    ) -> "EpochEstimator":
+        raise NotImplementedError
+
+    @abstractmethod
+    def _predict_logits(self, traces: Sequence[Trace]) -> list[Tensor]:
+        raise NotImplementedError
+
+    @torch.inference_mode()
+    def predict_uncertainty(self, traces: Sequence[Trace]) -> list[Tensor]:
+        return [logits.sigmoid() for logits in self._predict_logits(traces)]
+
+    @torch.inference_mode()
+    def _record_epoch(
+        self, epoch: int, train_loss: float, validation: ValidationData | None
+    ) -> None:
+        metrics: EpochMetrics = {
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "validation_loss": None,
+            "validation_token_pr_auc": None,
+            "validation_token_roc_auc": None,
+        }
+        if validation is not None and len(validation[1]):
+            traces, labels = validation
+            targets = torch.cat(list(labels))
+            labeled = targets >= 0
+            if labeled.any():
+                self.model.eval()
+                logits = torch.cat(self._predict_logits(traces))[labeled]
+                targets = targets[labeled]
+                loss = F.binary_cross_entropy_with_logits(
+                    logits, targets.float()
+                )
+                metrics["validation_loss"] = loss.item()
+                if targets.unique().numel() == 2:
+                    y = targets.numpy()
+                    scores = logits.sigmoid().numpy()
+                    precision, recall, _ = precision_recall_curve(y, scores)
+                    metrics["validation_token_pr_auc"] = float(
+                        auc(recall, precision)
+                    )
+                    metrics["validation_token_roc_auc"] = float(
+                        roc_auc_score(y, scores)
+                    )
+        self.training_history.append(metrics)
+        logger.info(
+            "%s epoch %d/%d %s",
+            type(self).__name__,
+            epoch,
+            self.epochs,
+            " ".join(
+                f"{key}={value:.4f}"
+                for key, value in metrics.items()
+                if key != "epoch" and value is not None
+            ),
+        )
+
+
+class _MLPProbe(EpochEstimator):
     feature: str
     widths: tuple[int, ...]
 
-    def __init__(self, epochs: int = 5, seed: int = 42) -> None:
-        self.epochs = epochs
-        self.seed = seed
-        self.model: nn.Module
-
     def fit(
-        self, traces: Sequence[Trace], labels: Sequence[Tensor] | None = None
+        self,
+        traces: Sequence[Trace],
+        labels: Sequence[Tensor] | None = None,
+        *,
+        validation: ValidationData | None = None,
     ) -> "_MLPProbe":
         features, targets = labeled_features(
             [trace[self.feature] for trace in traces], labels
         )
+        self.training_history.clear()
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(self.seed)
             layers = []
@@ -83,19 +175,23 @@ class _MLPProbe(UncertaintyEstimator):
             self.model = nn.Sequential(*layers, nn.Linear(widths[-1], 1))
             optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
             loss_fn = nn.BCEWithLogitsLoss()
-            for _ in range(self.epochs):
+            for epoch in range(1, self.epochs + 1):
+                self.model.train()
+                loss_sum = 0.0
                 for batch in torch.randperm(len(features)).split(256):
                     optimizer.zero_grad()
                     logits = self.model(features[batch]).squeeze(-1)
-                    loss_fn(logits, targets[batch].float()).backward()
+                    loss = loss_fn(logits, targets[batch].float())
+                    loss.backward()
                     optimizer.step()
+                    loss_sum += loss.item() * len(batch)
+                self._record_epoch(epoch, loss_sum / len(features), validation)
         self.model.eval()
         return self
 
-    @torch.inference_mode()
-    def predict_uncertainty(self, traces: Sequence[Trace]) -> list[Tensor]:
+    def _predict_logits(self, traces: Sequence[Trace]) -> list[Tensor]:
         return [
-            self.model(trace[self.feature].float()).squeeze(-1).sigmoid()
+            self.model(trace[self.feature].float()).squeeze(-1)
             for trace in traces
         ]
 
@@ -106,6 +202,7 @@ class ICRProbe(_MLPProbe):
 
 
 class SAPLMA(_MLPProbe):
+    default_epochs = 3
     feature = "saplma"
     widths = (256, 128, 64)
 
@@ -180,11 +277,9 @@ class _TokenHead(nn.Module):
         return self.classifier(features).squeeze(-1)
 
 
-class UncertaintyQuantificationHead(UncertaintyEstimator):
-    def __init__(self, epochs: int = 5, seed: int = 42) -> None:
-        self.epochs = epochs
-        self.seed = seed
-        self.model: _TokenHead
+class UncertaintyQuantificationHead(EpochEstimator):
+    default_epochs = 10
+    model: _TokenHead
 
     @staticmethod
     def _features(trace: Trace) -> Tensor:
@@ -192,20 +287,28 @@ class UncertaintyQuantificationHead(UncertaintyEstimator):
         return torch.cat(attention, dim=-1)
 
     def fit(
-        self, traces: Sequence[Trace], labels: Sequence[Tensor] | None = None
+        self,
+        traces: Sequence[Trace],
+        labels: Sequence[Tensor] | None = None,
+        *,
+        validation: ValidationData | None = None,
     ) -> "UncertaintyQuantificationHead":
         if labels is None:
             raise ValueError("This estimator requires token labels.")
         features = [self._features(trace) for trace in traces]
         targets = torch.cat(list(labels))
-        if targets[targets >= 0].unique().numel() != 2:
+        labeled_targets = targets[targets >= 0]
+        if labeled_targets.unique().numel() != 2:
             raise ValueError("Training needs clean and defective tokens.")
+        self.training_history.clear()
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(self.seed)
             self.model = _TokenHead(features[0].shape[1], width=64)
             optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
             loss_fn = nn.BCEWithLogitsLoss()
-            for _ in range(self.epochs):
+            for epoch in range(1, self.epochs + 1):
+                self.model.train()
+                loss_sum = 0.0
                 for batch in torch.randperm(len(features)).split(8):
                     values = [features[index] for index in batch]
                     padded = pad_sequence(values, batch_first=True)
@@ -224,12 +327,14 @@ class UncertaintyQuantificationHead(UncertaintyEstimator):
                         loss = loss_fn(logits[labeled], actual)
                         loss.backward()
                         optimizer.step()
+                        loss_sum += loss.item() * actual.numel()
+                train_loss = loss_sum / labeled_targets.numel()
+                self._record_epoch(epoch, train_loss, validation)
         self.model.eval()
         return self
 
-    @torch.inference_mode()
-    def predict_uncertainty(self, traces: Sequence[Trace]) -> list[Tensor]:
+    def _predict_logits(self, traces: Sequence[Trace]) -> list[Tensor]:
         return [
-            self.model(self._features(trace).unsqueeze(0))[0].sigmoid()
+            self.model(self._features(trace).unsqueeze(0))[0]
             for trace in traces
         ]

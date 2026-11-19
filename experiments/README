@@ -67,6 +67,17 @@ All methods use the same interface, `fit(traces, labels)` and
 The validation thresholds use annotations for every method. The methods
 are adapted to token-level defect detection and use one fixed seed.
 
+## Training logs
+
+UQ Head defaults to 10 epochs, ICR Probe to 15, and SAPLMA to 3. The
+agent notebook uses each estimator's default. Set `epochs` in an
+estimator notebook to override its budget. Each fit records its history in
+`estimator.training_history`.
+The notebooks enable live logs and display the history as a table.
+Training and validation loss are mean binary cross-entropy over labeled
+tokens. Validation token PR-AUC and ROC-AUC measure how well the probe
+ranks defective tokens. Held-out evaluation uses the final epoch.
+
 ## Transformers interface
 
 An extractor instance is callable with a prompt and reply and returns

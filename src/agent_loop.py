@@ -99,15 +99,15 @@ def create_agent(
     def route(state: AgentState) -> str:
         return END if state["stopped"] else "inspect"
 
-    graph = StateGraph(AgentState)
-    graph.add_node("inspect", inspect)
-    graph.add_node("reflect_and_revise", reflect_and_revise)
-
-    graph.add_edge(START, "inspect")
-    graph.add_edge("inspect", "reflect_and_revise")
-    graph.add_conditional_edges("reflect_and_revise", route, ["inspect", END])
-    
-    return graph.compile()
+    return (
+        StateGraph(AgentState)
+        .add_node("inspect", inspect)
+        .add_node("reflect_and_revise", reflect_and_revise)
+        .add_edge(START, "inspect")
+        .add_edge("inspect", "reflect_and_revise")
+        .add_conditional_edges("reflect_and_revise", route, ["inspect", END])
+        .compile()
+    )
 
 
 class CandidateState(TypedDict, total=False):

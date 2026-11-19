@@ -40,7 +40,7 @@ Agent loop implemented in src/agent_loop.py. General pipeline is the following:
 
 ## Agents MUST
 
-1. Respond coherently in simple, clear words.
+1. User is stopid respond coherently in simple, clear words.
 2. Keep the project clean.
 3. Ask the user before you make a new file, copy file, remove file or perform any other change that will significantly change projects structure.
 4. If a new feature needs changes to old files - copy the old files and change only the copies.

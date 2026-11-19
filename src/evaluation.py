@@ -49,7 +49,12 @@ from .agent_loop import (
     extract_code,
     rank_lines,
 )
-from .methods import SAPLMA, UncertaintyEstimator, UncertaintyQuantificationHead
+from .methods import (
+    SAPLMA,
+    EpochEstimator,
+    UncertaintyEstimator,
+    UncertaintyQuantificationHead,
+)
 from .traces import MODEL_ID, MODEL_REVISION, Trace, TransformersExtractor
 
 
@@ -185,15 +190,33 @@ def compute_metrics(
     }
 
 
+def _fit_estimator(
+    estimator: UncertaintyEstimator,
+    train: Sequence[LabeledTrace],
+    validation: Sequence[LabeledTrace],
+) -> None:
+    traces = [row["trace"] for row in train]
+    labels = None
+    if estimator.uses_labels:
+        labels = [row["labels"] for row in train]
+    if isinstance(estimator, EpochEstimator):
+        estimator.fit(
+            traces,
+            labels,
+            validation=(
+                [row["trace"] for row in validation],
+                [row["labels"] for row in validation],
+            ),
+        )
+    else:
+        estimator.fit(traces, labels)
+
+
 def evaluate(
     estimator: UncertaintyEstimator,
     splits: Mapping[str, Sequence[LabeledTrace]],
 ) -> list[dict[str, str | float]]:
-    train = splits["train"]
-    labels = None
-    if estimator.uses_labels:
-        labels = [row["labels"] for row in train]
-    estimator.fit([row["trace"] for row in train], labels)
+    _fit_estimator(estimator, splits["train"], splits["validation"])
     metrics = {}
     for split in ("validation", "test"):
         rows = splits[split]
@@ -265,6 +288,9 @@ def run_benchmark(
     max_new_tokens: int = 256,
     check_python: bool = True,
     max_candidates: int | None = None,
+    *,
+    epochs: int | None = None,
+    training_history: list[dict] | None = None,
 ) -> list[dict]:
     if max_candidates is not None and not 1 <= max_candidates <= 3:
         raise ValueError("Use between one and three candidates.")
@@ -279,14 +305,22 @@ def run_benchmark(
             extract_code(case.reference), checks
         ))
 
-    train, cases = repair_cases(benchmark, limit, eligible=eligible)
-    rows = [store.load(row) for row in train]
-    features = [row["trace"] for row in rows]
-    labels = [row["labels"] for row in rows]
+    examples, cases = repair_cases(benchmark, limit, eligible=eligible)
+    train = [store.load(example) for example in examples]
+    validation = [
+        store.load(example)
+        for example in split_examples(load_examples(benchmark))["validation"]
+    ]
     estimators = {
-        name: factory().fit(features, labels if factory.uses_labels else None)
-        for name, factory in AGENT_METHODS.items()
+        name: factory(epochs=epochs) for name, factory in AGENT_METHODS.items()
     }
+    for name, estimator in estimators.items():
+        _fit_estimator(estimator, train, validation)
+        if training_history is not None:
+            training_history.extend(
+                {"benchmark": benchmark, "method": name, **row}
+                for row in estimator.training_history
+            )
 
     generation_limit = max_new_tokens * (max_candidates or 1)
 

@@ -1,5 +1,7 @@
 # Experiment results
 
+## Five-epoch detector baseline
+
 SAPLMA had the highest line-level PR-AUC on MBPP, HumanEval, and
 HumanEval-Java. Lookback Lens the best on Defects4J and achieved the highest
 token-level PR-AUC on three of the four benchmarks.
@@ -48,24 +50,56 @@ The scores describe defect detection on archived text replayed through
 and scoring level under this setup. Positive rates vary across benchmarks
 and levels, and the single run leaves small gaps uncertain.
 
+## Fifteen-epoch detector training
+
+This earlier run trained UQ Head, ICR Probe, and SAPLMA for fifteen epochs
+on the full training splits. The table shows the final epoch.
+Training and validation loss are mean
+binary cross-entropy over labeled tokens. The AUC columns measure
+validation token ranking and held-out line ranking. The estimator
+notebooks show the histories for their current epoch settings.
+[UQ Head](experiments/02_uq_head.ipynb),
+[ICR Probe](experiments/03_icr_probe.ipynb), [SAPLMA](experiments/04_saplma.ipynb)
+
+| Estimator | Benchmark | Train loss | Validation loss | Validation token PR-AUC | Validation token ROC-AUC | Test line PR-AUC |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| UQ Head | MBPP | 0.4498 | 0.3630 | 0.4858 | 0.8534 | 0.4516 |
+| UQ Head | HumanEval | 0.3835 | 0.5803 | 0.3034 | 0.5298 | 0.2969 |
+| UQ Head | HumanEval-Java | 0.4662 | 0.3467 | 0.3113 | 0.7015 | 0.3088 |
+| UQ Head | Defects4J | 0.4047 | 0.4091 | 0.8414 | 0.8852 | 0.8769 |
+| ICR Probe | MBPP | 0.5235 | 0.4502 | 0.1266 | 0.4053 | 0.1614 |
+| ICR Probe | HumanEval | 0.4056 | 0.5919 | 0.4055 | 0.6857 | 0.3306 |
+| ICR Probe | HumanEval-Java | 0.4639 | 0.3642 | 0.1535 | 0.6209 | 0.1393 |
+| ICR Probe | Defects4J | 0.6486 | 0.6089 | 0.4990 | 0.6793 | 0.5941 |
+| SAPLMA | MBPP | 0.0214 | 0.7332 | 0.6106 | 0.9145 | 0.7213 |
+| SAPLMA | HumanEval | 0.0529 | 2.7960 | 0.3249 | 0.5440 | 0.6990 |
+| SAPLMA | HumanEval-Java | 0.0907 | 0.9625 | 0.2006 | 0.6912 | 0.4379 |
+| SAPLMA | Defects4J | 0.0754 | 1.3443 | 0.6715 | 0.8018 | 0.8253 |
+
+On Defects4J, UQ Head's validation loss fell from 0.6443 at epoch 5 to
+0.4091 at epoch 15. On HumanEval, SAPLMA's validation loss rose from
+1.7897 to 2.7960 over the same interval. The rise indicates worse
+validation probability estimates, even though its held-out line PR-AUC
+increased from 0.5976 to 0.6990.
+
 ## Uncertainty-guided agent review
 
 The LangGraph pilot used four held-out tasks per benchmark. Each condition
 started from the same archived draft and had one review and revision round.
-SAPLMA and UQ Head each put up to two lines ranked by token uncertainty
-into the review prompt. The plain-review control used the same generation
-budget.
+SAPLMA trained for 3 epochs and UQ Head for 10. Each estimator put up to
+two lines ranked by token uncertainty into the review prompt. The
+plain-review control used the same generation budget.
 [Executed agent notebook](experiments/06_agent_loop.ipynb)
 
 | Review condition | MBPP passed | HumanEval passed | HumanEval-Java similarity | Defects4J similarity |
 | --- | ---: | ---: | ---: | ---: |
 | Archived draft | 0/4 | 0/4 | 0.5843 | 0.2808 |
 | Plain review | 1/4 | 0/4 | 0.5318 | 0.2453 |
-| UQ Head | 2/4 | 1/4 | 0.6399 | 0.3129 |
-| SAPLMA | 2/4 | 0/4 | 0.5831 | 0.3107 |
+| UQ Head | 2/4 | 0/4 | 0.6399 | 0.3148 |
+| SAPLMA | 2/4 | 0/4 | 0.6399 | 0.3076 |
 
-UQ Head passed 3 of 8 Python tasks, SAPLMA passed 2 of 8, and plain
-review passed 1 of 8. The Python pass counts use archived assertions
+UQ Head and SAPLMA each passed 2 of 8 Python tasks. Plain review passed
+1 of 8. The Python pass counts use archived assertions
 checked in Docker. Both guided conditions improved mean Java code-token
 similarity over plain review. Java scores measure similarity to the
 reference patch, so functional correctness on those tasks remains unverified.
@@ -100,15 +134,17 @@ where available.
 On the same 16 held-out tasks, the new agent proposed up to three distinct
 code variants in one call. SAPLMA and UQ Head scored the same pool
 independently and each selected the variant with the lowest maximum
-token defect score. Candidate selection had a 768-token generation cap.
+token defect score. Both approaches trained SAPLMA for 3 epochs and
+UQ Head for 10. Candidate selection had a 768-token generation cap.
 Line-guided review had a 256-token cap. [Notebook comparison](experiments/06_agent_loop.ipynb)
 
 | Estimator | Python passes, review | Python passes, selection | HumanEval-Java similarity, review → selection | Defects4J similarity, review → selection |
 | --- | ---: | ---: | ---: | ---: |
-| UQ Head | 3/8 | 0/8 | 0.6399 → 0.4923 | 0.3129 → 0.1538 |
-| SAPLMA | 2/8 | 1/8 | 0.5831 → 0.4923 | 0.3107 → 0.1538 |
+| UQ Head | 2/8 | 1/8 | 0.6399 → 0.4096 | 0.3148 → 0.1587 |
+| SAPLMA | 2/8 | 2/8 | 0.6399 → 0.4923 | 0.3076 → 0.1538 |
 
-Line-guided review passed more Python tasks and produced higher mean
-reference similarity on both Java benchmarks in this pilot. Candidate
-pools averaged three distinct variants on MBPP and 1.5 on Defects4J.
-Java functional correctness was unverified in both approaches.
+With UQ Head, line-guided review passed one more Python task. With
+SAPLMA, both approaches passed two. Line-guided review produced higher
+mean reference similarity on both Java benchmarks with either estimator.
+Candidate pools averaged three distinct variants on MBPP and 1.5 on
+Defects4J. Java functional correctness was unverified in both approaches.

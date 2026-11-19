@@ -60,12 +60,18 @@ flowchart TD
    from src.methods import SAPLMA
 
    store = TraceStore(quantize=True)
-   training = split_examples(load_examples("mbpp"), PILOT_LIMITS)["train"]
-   rows = [store.load(example) for example in training]
+   splits = split_examples(load_examples("mbpp"), PILOT_LIMITS)
+   rows = [store.load(example) for example in splits["train"]]
+   validation = [store.load(example) for example in splits["validation"]]
    estimator = SAPLMA().fit(
        [row["trace"] for row in rows],
        [row["labels"] for row in rows],
+       validation=(
+           [row["trace"] for row in validation],
+           [row["labels"] for row in validation],
+       ),
    )
+   print(estimator.training_history[-1])
    ```
 
 3. Generate an initial draft and give `create_agent` a scoring callback.
